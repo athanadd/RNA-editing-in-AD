@@ -1,0 +1,1171 @@
+The .fastq files with the following SRA accession numbers were downloaded:
+SRR609422
+SRR609423
+SRR609424
+SRR609425
+SRR609426
+SRR609427
+SRR609428
+SRR609429
+SRR609430
+
+The files were analysed using FastQC (http://www.bioinformatics.babraham.ac.uk/projects/fastqc/) without any extra options.
+
+The following trimmings were performed using trim_galore! (http://www.bioinformatics.babraham.ac.uk/projects/trim_galore/):
+
+First trimming: Illumina standard
+
+Second trimming:	
+trim_galore --fastqc -o output_directory -a2 TGGTATCAACGCAGAGTACTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT -a TGGTATCAACGCAGAGTACTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT --paired file_1.fastq.gz file_2.fastq.gz
+
+Third trimming:
+trim_galore --fastqc -o output_directory -a2 TGGTATCAACGCAGAGTACATGGGATGGCACATGCAGCGCAAGTAGGTCT -a TGGTATCAACGCAGAGTACATGGGATGGCACATGCAGCGCAAGTAGGTCT --paired file_1.fastq.gz file_2.fastq.gz
+
+Fourth trimming(for SRR609422,SRR609423,SRR609425 only):
+trim_galore --fastqc -o output_directory -a2 TGGTATCAACGCAGAGTCCGGTAATCGCATAAAACTTAAAACTTTACAGT -a TGGTATCAACGCAGAGTCCGGTAATCGCATAAAACTTAAAACTTTACAGT --paired file_1.fastq.gz file_2.fastq.gz
+
+Fifth trimming(for all):	
+trim_galore --fastqc -o output_directory -a2 TGGTATCAACGCAGAGTACATGGGCAACTTCTTAGAGGGACAAGTGGCGT -a TGGTATCAACGCAGAGTACATGGGCAACTTCTTAGAGGGACAAGTGGCGT --trim1 --clip_R1 8 --clip_R2 8 --three_prime_clip_R1 3 --three_prime_clip_R2 3 --paired file_1.fastq.gz file_2.fastq.gz
+
+The sequences of the same phenotype were merged in one file using the cat command:
+cat SRR609422-26.fastq.gz > AD_phenotype.fastq.gz
+cat SRR609427-30.fastq.gz > Control_phenotype.fastq.gz
+
+The alignment was then performed using tophat2 (https://ccb.jhu.edu/software/tophat/index.shtml):
+
+tophat genes.gtf -g 1 --no-novel-indels --no-coverage-search --mate-inner-dist=-46 --mate-std-dev=40 --transcriptome-index=hg38/transcriptome_data --read-mismatches 3 --read-edit-dist 3 --read-realign-edit-dist 0 -a 12 -m 1 -o output_directory hg38/Bowtie2Index/genome input_file_1 input_file_2
+
+The bam files were sorted and indexed using samtools (http://samtools.sourceforge.net/):
+
+samtools sort -o sorted_file.bam accepted_hits.bam
+samtools index sorted_file.bam
+
+A Blat Correction analysis was performed using the original script provided from the REDItools website (http://reditools.sourceforge.net):
+
+python REDItoolBlatCorrection.py -i input_bam_file -o output_directory -V -f reference_fasta_file -F reference_2bit_file
+
+The main analysis was performed by REDItool Denovo, a script of the REDItools suite:
+
+python REDItoolDenovo.py -i input_bam_file -o output_directory snps_file -p -f reference_fasta_file -e -l -u -B blat_correction_directory -W splice_sites
+
+The snps and splice_sites files were prepared according to the official REDItools documentation.
+
+The output table with the significant sites was converted in order to be processed by ANNOVAR using the following R script:
+
+R --vanilla --quiet <<RSCRIPT
+.libPaths("path_to_library")
+library(dplyr)
+
+
+  reditools = read.table(skip = 1, "table_sig_from_REDItools")
+  Alt_base = sapply(as.character(reditools[,11]), function(x){
+    unlist(strsplit(x, split = ""))[[2]]
+    })
+  reditools%>%
+    (function(x){
+      cbind(x[,1], x[,2], x[,2], x[,3], Alt_base, x[,4:ncol(x)])
+      })%>%
+    (function(y){
+      write.table(y, file = "converted_file" , 
+                  row.names = FALSE, col.names = FALSE,quote = FALSE)
+    })
+RSCRIPT
+
+The converted file is used as an input to ANNOVAR (http://annovar.openbioinformatics.org/en/latest/):
+
+ANNOVAR/table_annovar.pl converted_file annovar_files/humandb/hg38 -buildver hg38 -remove -protocol refGene,snp144 -operation g,f -nastring . -csvout -out annotated_file
+
+The strand correction takes place using a custom R function that detects the position of each gene from a reference file and adds this information to the position of the editing event. The reference files are obtained from UCSC and are Homo_sapiens.GRCh38.83.csv for human datasets and Mus_musculus_ensembl_dataset.csv for mice datasets.
+
+add.strand <- function(species) {
+        library(dplyr)
+        
+        #Get the full paths of the input files
+        annotated = list.files("./annotated", full.names = T)
+        converted = list.files("./converted", full.names = T)
+        
+        #Set the variables of the annotation files according to the species
+        if (species == "mouse") {
+                RG = read.csv("./required_files/mouse/Mus_musculus_ensembl_dataset.csv")
+                RG = RG[!duplicated(RG$gene_name), ]
+        }
+        else if (species == "human") {
+                RG = read.csv("./required_files/human/Homo_sapiens.GRCh38.83.csv")
+                RG = RG[!duplicated(RG$gene_name),]
+        }
+        
+        #Create the ouputs folder
+        dir.create("./with_strand")
+        
+        #Start the loop for each file
+        for (y in seq_along(annotated)) {
+                TA = read.csv(annotated[y])
+                ind1 = nrow(TA)
+                strand_vector = c()
+                
+                for (i in seq(ind1)) {
+                        # if the position is located in intergenic, upstream or downstream region,
+                        # then it is assigned directly with ".", because strand cannot be defined
+                        
+                        if (TA[i, "Func.refGene"] %in% c("intergenic",
+                                                         "upstream",
+                                                         "downstream")) {
+                                print("no_strand")
+                                strand_vector = c(strand_vector, ".")
+                        }
+                        else {
+                                pos = unlist(strsplit(as.character(TA[i, "Gene.refGene"]), split = ","))
+                                
+                                # one gene name for this position
+                                if (length(pos) == 1) {
+                                        if (length(which(RG$gene_name == pos)) == 1) {
+                                                ind2 = which(RG$gene_name == pos)
+                                                strand_vector = c(
+                                                        strand_vector,
+                                                        as.character(RG$strand[ind2])
+                                                )
+                                        }
+                                        else {
+                                                # "missing" if the gene name is not matched
+                                                strand_vector = c(strand_vector,
+                                                                  "missing")
+                                        }
+                                }
+                                else {
+                                        # two gene names in this position
+                                        if (length(which(RG$gene_name == pos[1])) ==
+                                            1) {
+                                                ind2 = which(RG$gene_name == pos[1])
+                                                strand_vector = c(
+                                                        strand_vector,
+                                                        as.character(RG$strand[ind2])
+                                                )
+                                        }
+                                        else if (length(which(RG$gene_name == pos[2])) ==
+                                                 1) {
+                                                ind2 = which(RG$gene_name == pos[2])
+                                                strand_vector = c(
+                                                        strand_vector,
+                                                        as.character(RG$strand[ind2])
+                                                )
+                                        }
+                                        else {
+                                                strand_vector = c(strand_vector,
+                                                                  "missing")
+                                        }
+                                }
+                        }
+                }
+                
+                # the strand information has been gathered in the strand_vector
+                new_TA_1 = TA[, which(colnames(TA) == "Chr"):which(colnames(TA) ==
+                                                                           "Alt")]
+                new_TA_1 = mutate(new_TA_1, strand = strand_vector)
+                new_TA_2 = cbind(new_TA_1, TA[, which(colnames(TA) == "Func.refGene"):ncol(TA)])
+                output = list.files("./converted")[y]
+                output = gsub("converted_", "", output)
+                output = paste0("./with_strand/", output, ".csv")
+                write.csv(new_TA_2, file = output)
+        }
+}
+
+
+The function is called: Choose between "human" or "mouse" for species and run this function!
+add.strand("human")
+
+
+The following function filtres the RNA editing positions and keeps edititng events that appear on the correct strand. The function also splits the tables according to the enzyme performing the editing (ADAR or APOBEC):
+
+filter.files <- function(){
+        
+        library(xlsx)
+        library(dplyr)
+        
+        #Get the full paths of the input files
+        converted = list.files("./converted", full.names = T)
+        with.strand = list.files("./with_strand/", full.names = T)
+        
+        #Create the ouputs folders
+        dir.create("./final_files/ADAR_all_positions/tables", recursive = T)
+        dir.create("./final_files/APOBEC_all_positions/tables", recursive = T)
+        dir.create("./final_files/ADAR_all_positions/xlsx", recursive = T)
+        dir.create("./final_files/APOBEC_all_positions/xlsx", recursive = T)
+        
+        #Start the loop for each file
+        for (y in seq_along(converted)) {
+                
+                output = list.files("./converted")[y]
+                output = gsub("converted_", "", output)
+                table_annovar = read.csv(with.strand[y])
+                index=read.table(converted[y])
+                data1 = table_annovar%>%
+                        mutate(Read_depth = index[,7])%>%
+                        mutate(Quality_score = index[,8])%>%
+                        mutate(Variant_allele_frequency = index[,14])%>%
+                        mutate(P_value = index[,15])
+                
+                #For APOBEC
+                
+                data2 = data1 %>%
+                        (function(x){
+                                index1 = c(which(data1$Ref == "C" & data1$Alt == "T" & data1$strand %in% c(".","+","missing")), 
+                                           which(data1$Ref == "G" & data1$Alt == "A" & data1$strand %in% c(".","-","missing")))
+                                x[index1,]
+                        }) %>%
+                        (function(x){x})
+                
+                write.table(row.names = FALSE,data2,file=paste0("./final_files/APOBEC_all_positions/tables/APOBEC.",output))
+                write.xlsx(row.names = FALSE,data2,file=paste0("./final_files/APOBEC_all_positions/xlsx/APOBEC.",output,".xlsx"))
+                
+                #For ADAR
+                
+                data2 = data1%>%
+                        (function(x){
+                                index1 = c(which(data1$Ref == "A" & data1$Alt == "G" & data1$strand %in% c(".","+","missing")), 
+                                           which(data1$Ref == "T" & data1$Alt == "C" & data1$strand %in% c(".","-","missing")))
+                                x[index1,]
+                        }) %>%
+                        (function(x){x})
+                
+                write.table(row.names = FALSE,data2,file=paste0("./final_files/ADAR_all_positions/tables/ADAR.",output))
+                write.xlsx(row.names = FALSE,data2,file=paste0("./final_files/ADAR_all_positions/xlsx/ADAR.",output,".xlsx"))
+        }
+}
+
+Call the function:
+filter.files()
+
+For the differential expression analysis:
+
+For the differential expression analysis the workflow described at the Bioconductor website was followed. The comments can also be found at the same workflow (some of them are copied below to facilitate reading). It can be found at this link http://www.bioconductor.org/help/workflows/rnaseqGene/
+
+
+Create the table that contains info about the samples and load it.
+sample.table <- read.csv("sample_table.csv", sep = ";", row.names = 1)
+
+Using the Run column in the sample table, we construct the full paths to the files we want to perform the counting operation on
+
+filenames <- file.path ("G:", "satoh_sorted_bam_files",paste0( "sorted_", sample.table$Run, ".bam"))
+
+We indicate in Bioconductor that these files are BAM files using the BamFileList function from the Rsamtools package:
+library("Rsamtools")
+bamfiles <- BamFileList(filenames, yieldSize=2000000)
+
+Change the names of the bamfiles because they should not be all the same:
+names(bamfiles) <- sample.table$Run
+
+Next, we need to read in the gene model that will be used for counting reads/fragments. We will read the gene model from UCSC GTF file, using makeTxDbFromGFF from the GenomicFeatures package:
+library("GenomicFeatures")
+
+We indicate that none of our sequences (chromosomes) are circular using a 0-length character vector:
+genesfile <- file.path ( "C:", "R_wd", "required_files", "known_genes", "hg38_genes", "Homo_sapiens.GRCh38.84.gtf")
+txdb <- makeTxDbFromGFF (genesfile, format="gtf", circ_seqs=character())
+
+The following line produces a GRangesList of all the exons grouped by gene:
+ebg <- exonsBy(txdb, by="gene")
+
+Change the chromosomes names to match the gtf file:
+first, get the names of the chromosomes:
+
+library("GenomeInfoDb")
+chrUCSC <- extractSeqlevels(species="Homo_sapiens", style="UCSC")
+chrENSEMBL <- extractSeqlevels(species="Homo_sapiens", style="Ensembl")
+
+Create a vector with the "from-to" names:
+
+newnames <- chrUCSC #To
+names(newnames) <- chrENSEMBL #From
+
+Rename:
+ebg2 <- renameSeqlevels(ebg,newnames)
+
+The function summarizeOverlaps from the GenomicAlignments package will do the counting. This produces a SummarizedExperiment object that contains a variety of information about the experiment:
+
+library("GenomicAlignments")
+
+se <- summarizeOverlaps(features=ebg2, reads=bamfiles,
+                        mode="Union",
+                        singleEnd=FALSE,
+                        fragments=FALSE,
+                        ignore.strand=TRUE )
+
+
+The colData slot, so far empty, should contain all the metadata.
+Because we used a column of sampleTable to produce the bamfiles vector, we know the columns of se are in the same order as the rows of sampleTable. We can assign the sampleTable as the colData of the summarized experiment, by converting it into a DataFrame and using the assignment function:
+colData(se) <- DataFrame(sample.table)
+
+Note: it is prefered in R that the first level of a factor be the reference level (e.g. control, or untreated samples), so we can relevel the dex factor:
+
+se$Phenotype <- relevel(se$Phenotype, "normal")
+
+Once we have our fully annotated SummarizedExperiment object, we can construct a DESeqDataSet object from it that will then form the starting point of the analysis. We add an appropriate design for the analysis:
+
+library("DESeq2")
+dds <- DESeqDataSet(se, design = ~ Phenotype)
+
+We remove rows of the DESeqDataSet that have no counts, or only a single count across all samples:
+
+dds <- dds[ rowSums(counts(dds)) > 1, ]
+
+We perform the rlog transformation:
+
+rld <- rlog(dds)
+
+We can run the differential expression pipeline on the raw counts with a single call to the function DESeq:
+
+dds2 <- DESeq(dds)
+
+Calling results without any arguments will extract the estimated log2 fold changes and p values for the last variable in the design formula:
+
+res <- results(dds2)
+
+
+We keep results with a p-value lower than 0.05:
+
+
+res.sig <- res[!is.na(res$padj),]
+res.sig <- res.sig[res.sig$padj < 0.05, ]
+
+
+Dput the results to be used at the pathway analysis:
+
+
+dput(res, "results")
+
+
+Change Ensembl ids to gene symbols and keep only known genes:
+
+
+library("AnnotationDbi")  #Base package
+library("org.Hs.eg.db")  #Human
+
+
+Get rld with a p value less than 0.05 according to the significant results:
+
+
+sig.rld <- rld[row.names(res.sig),]
+
+
+genesymbols.rld <- mapIds(org.Hs.eg.db,
+                          keys=row.names(sig.rld),
+                          column="SYMBOL",
+                          keytype="ENSEMBL",
+                          multiVals="first")
+
+
+
+
+rld.symbols <- sig.rld
+row.names(rld.symbols) <- genesymbols.rld
+rld.symbols.no.na <- rld.symbols[!is.na(row.names(rld.symbols)),]
+
+
+Gene clustering of the 20 most variable genes:
+
+
+Load the library and select the 20 most variable genes:
+
+
+library("genefilter")
+topVarGenes <- head(order(rowVars(assay(rld.symbols.no.na)),decreasing=TRUE),20)
+
+
+Provide a data.frame that instructs the pheatmap function how to label the columns:
+
+
+df <- as.data.frame(colData(rld.symbols.no.na)[, c("Phenotype"), drop=FALSE])
+row.names(df) <- c("1_AD sample 1", "1_AD sample 2", "1_AD sample 3", "1_AD sample 4",
+                   "1_AD sample 5", "1_cntrl sample 1", "1_cntrl sample 2", "1_cntrl sample 3",
+                   "1_cntrl sample 4", "2_AD sample 1", "2_AD sample 2", "2_AD sample 3",
+                   "2_cntrl sample 1", "2_cntrl sample 2", "2_cntrl sample 3")
+
+
+The samples are split into two groups, one that contains the samples from university Emory University, Atlanta (group 1) and one that contain the samples from University of Kentucky, Lexington (group 2).
+
+
+For the first group of samples:
+
+
+df.group1 <- df[1:9, , drop=FALSE]
+
+
+For the second group of samples:
+
+
+df.group2 <- df[10:15, , drop=FALSE]
+
+
+Sort the data frame by phenotpe:
+
+
+df.order.group1 <- order(df.group1$Phenotype, decreasing = FALSE)
+df.order.group2 <- order(df.group2$Phenotype, decreasing = FALSE)
+
+
+Make the data matrices:
+
+
+mat <- assay(rld.symbols.no.na)[ topVarGenes, ]
+mat <- mat - rowMeans(mat)
+colnames(mat) <- row.names(df)
+
+
+For the first and second group of samples:
+
+
+mat.group1 <- mat[,1:9]
+mat.group2 <- mat[,10:15]
+
+
+Draw the heatmaps:
+
+
+library("pheatmap")
+pheatmap(mat.group1[,df.order.group1], annotation_col=df.group1, cluster_cols = FALSE)
+pheatmap(mat.group2[,df.order.group2], annotation_col=df.group2, cluster_cols = FALSE)
+
+
+To annotate the results and add gene symbol and ENTREZID:
+
+
+library("AnnotationDbi")  #Base package
+library("org.Hs.eg.db")  #Human
+
+
+res$symbol <- mapIds(org.Hs.eg.db,
+                     keys=row.names(res),
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+res$entrez <- mapIds(org.Hs.eg.db,
+                     keys=row.names(res),
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+
+Order by p-adj value:
+
+
+res.ordered <- res[order(res$padj),]
+res.sig <- res[!is.na(res$padj),]
+res.sig <- res.sig[res.sig$padj < 0.05, ]
+
+
+Differential RNA editing analysis:
+
+
+Load all the samples in a list. Use the following function to find common positions in samples of the same group (control or diseased). The result is a table with the merged samples. Each position is found in all of the samples.
+list is the list generated previously.
+out.name is the output name of the dataframe. The word "merged" will be automatically added.
+group.names is a character vector containing the names of the samples of the lists generated previously that are in the same group (e.g. controls):
+
+
+merge.sites <- function(list, out.name, group.names){
+        library("dplyr")
+        
+        #Make an index with the positions of the positions that are found in all samples
+        index <- logical(length = nrow(as.data.frame(subset(list, names(list) == group.names[1]))))
+        index2 <- logical(length = length(group.names))
+        for (i in seq_len(nrow(as.data.frame(subset(list, names(list) == group.names[1]))))) {
+                for (j in seq_along(group.names)) {
+                        index2[j] <- subset(list, names(list) == group.names[1])[[1]][i,"Start"] %in%
+                                subset(list, names(list) == group.names[j])[[1]][,"Start"]
+                }
+                index[i] <- all(index2)
+        }
+        #Make a data frame that will contain the final table
+        table1 <- subset(list, names(list) == group.names[1])[[1]][index,]
+        df <- data.frame(matrix(nrow = sum(index), ncol = 1))
+        df <-  df %>%
+                transmute(X = seq_len(sum(index))) %>%
+                mutate(Chr = table1[,"Chr"]) %>%
+                mutate(Position = table1[,"Start"]) %>%
+                mutate(Ref = table1[,"Ref"]) %>%
+                mutate(Alt = table1[,"Alt"]) %>%
+                mutate(strand = table1[,"strand"]) %>%
+                mutate(Func.refGene = table1[,"Func.refGene"]) %>%
+                mutate(Gene.refGene = table1[,"Gene.refGene"]) %>%
+                mutate(GeneDetail.refGene = table1[,"GeneDetail.refGene"]) %>%
+                mutate(ExonicFunc.refGene = table1[,"ExonicFunc.refGene"]) %>%
+                mutate(AAChange.refGene = table1[,"AAChange.refGene"]) %>%
+                mutate(freq1 = table1[,"Variant_allele_frequency"])
+        names(df)[names(df) == "freq1"] <- paste0("Variant_freq.", group.names[1])
+        
+        #Insert the frequencies of the other samples in the data frame
+        df.columns <- ncol(df)
+        for (j in seq_along(group.names)) {
+                if (j == 1) {next}
+                column.number = j + df.columns - 1
+                temptable <- subset(list, names(list) == group.names[j])[[1]]
+                for (y in seq_len(nrow(df))){
+                        df[y,column.number] <- temptable[which(temptable[,"Start"] ==
+                                                                       df[y,"Position"]),"Variant_allele_frequency"] 
+                }
+                names(df)[column.number] <- paste0("Variant_freq.", group.names[j])
+        }
+        
+        #Calculate the mean and standard deviation
+        library("genefilter")
+        mean.col <- ncol(df) + 1
+        stdev.col <- ncol(df) + 2
+        df[, paste0(out.name, "_mean")] <- rowMeans(df[,paste0("Variant_freq.", group.names)])
+        df[, paste0(out.name, "_stdev")] <- round(rowSds(df[,paste0("Variant_freq.", group.names)]), digits = 4)
+        
+        #Export!
+        assign(paste0("merged_",out.name), df, .GlobalEnv)
+        
+             
+}
+
+
+Get the merged sites for each group:
+
+
+merge.sites(satoh.adar, "satoh.adar.AD.group1", names(satoh.adar)[1:5] )
+merge.sites(satoh.adar, "satoh.adar.AD.group2", names(satoh.adar)[6:8] )
+merge.sites(satoh.adar, "satoh.adar.normal.group1", names(satoh.adar)[9:12] )
+merge.sites(satoh.adar, "satoh.adar.normal.group2", names(satoh.adar)[13:15] )
+merge.sites(satoh.apobec, "satoh.apobec.AD.group1", names(satoh.apobec)[1:5] )
+merge.sites(satoh.apobec, "satoh.apobec.AD.group2", names(satoh.apobec)[6:8] )
+merge.sites(satoh.apobec, "satoh.apobec.normal.group1", names(satoh.apobec)[9:12] )
+merge.sites(satoh.apobec, "satoh.apobec.normal.group2", names(satoh.apobec)[13:15] )
+
+
+
+
+Function to perform a binary comparison and separate common and unique sites between 2 groups in each dataset.
+merged1 and merged2 are the dataframes of the merged controls and subjects that are generated by the previous function merge.sites().
+phen1 and phen2 are the two phenotypes of the two groups respectively (e.g."normal", "AD").
+outname is the name of the output file (e.g. "achour.adar")
+colnumber is the number of columns that the tables have BEFORE the columns with the frequencies and the mean and stdev. There should be no other columns after the stdev!
+
+
+compare.sites <- function(merged1, merged2, phen1, phen2, outname, colnumber = 11) {
+        ##Select the unique sites in each dataframe
+        
+        #First, create an index with the common sites
+        index <- logical(length = nrow(merged1))
+        for (i in seq_len(nrow(merged1))) {
+                index[i] <- merged1[i, "Position"] %in% merged2[,"Position"]
+        }
+        
+        #Unique sites in merged1
+        unique1 <- merged1[!index,]
+        unique1$X <- seq_len(nrow(unique1))
+        #Export!
+        assign(paste0(outname, ".", phen1, ".unique"), unique1, .GlobalEnv)
+        
+        #Create a second index with the common sites according to merged2
+        index2 <- logical(length = nrow(merged2))
+        for (i in seq_len(nrow(merged2))) {
+                index2[i] <- merged2[i, "Position"] %in% merged1[,"Position"]
+        }
+        #Unique sites in merged2
+        unique2 <- merged2[!index2,]
+        unique2$X <- seq_len(nrow(unique2))
+        #Export!
+        assign(paste0(outname, ".", phen2, ".unique"), unique2, .GlobalEnv)
+        
+        ##Select the common sites in the two dataframes
+        #Use the index already created and build a new dataframe that will
+        #contain the data
+        common <- merged1[index,]
+        common$X <- seq_len(nrow(common))
+        #Add the data from the other table
+        names2 <- names(merged2)[-c(1:colnumber)]
+        for (j in seq_along(names2)) {
+                varcol <- names2[j]
+                for (i in seq_len(nrow(common))) {
+                        common[i,varcol] <- merged2[which(merged2[,"Position"] == common[i,"Position"]),varcol]
+                }
+        }
+        
+        #Statistical tests
+        #calculate which are columns with frequencies and which with mean and stdev
+        meancol1 <- ncol(merged1) - 1
+        stdevcol1 <- ncol(merged1)
+        freqcol1 <- names(merged1)[-c(1:colnumber, meancol1, stdevcol1)]
+        
+        meancol2 <- ncol(merged2) - 1
+        stdevcol2 <- ncol(merged2)
+        freqcol2 <- names(merged2)[-c(1:colnumber, meancol2, stdevcol2)]
+        
+        #Perform the t-test
+        for (i in seq_len(nrow(common))) {
+                #do not do a t-test if all the values are the same
+                vec <- c(common[i,freqcol1], common[i,freqcol2])
+                vec <- unique(vec)
+                
+                if (length(vec) == 1) {
+                        common[i,"t.test"] <- NA
+                        common[i, "p.value"] <- NA
+                }
+                else {
+                        test <- t.test(common[i,freqcol1], common[i,freqcol2])
+                        common[i,"t.test"] <- test[1]
+                        common[i, "p.value"] <- test[3]
+                }
+        }
+        
+        #Remove rows with same value in all samples
+        nas <- logical(length = nrow(common))
+        for (i in seq_len(nrow(common))) {
+                if (is.na(common[i,"p.value"])) {
+                        nas[i] <- TRUE 
+                }
+                else {next}
+        }
+        common2 <- common[!nas,]
+        
+        #Reorder the data frame according to the p.value
+        common.ord <- common2[order(common2$p.value),]
+        common.ord$X <- seq_len(nrow(common.ord))
+        
+        #Export!
+        assign(paste0(outname, ".", phen1, ".", phen2, ".common"), common.ord, .GlobalEnv)
+}
+
+
+Use the function to generate the tables:
+
+
+compare.sites(merged_satoh.adar.normal.group1, merged_satoh.adar.AD.group1,
+              "normal", "AD", "satoh.adar.group1")
+compare.sites(merged_satoh.adar.normal.group2, merged_satoh.adar.AD.group2,
+              "normal", "AD", "satoh.adar.group2")
+compare.sites(merged_satoh.apobec.normal.group1, merged_satoh.apobec.AD.group1,
+              "normal", "AD", "satoh.apobec.group1")
+compare.sites(merged_satoh.apobec.normal.group2, merged_satoh.apobec.AD.group2,
+              "normal", "AD", "satoh.apobec.group2")
+
+
+Finally, export the tables as .xlsx files using the xlsx library.
+
+
+Correlation between RNA editing and gene expression.
+
+
+Load the files and use the following function to split double genes in the ref.Gene field in separate rows and remove rows with the value "NONE" and rows with freq=1 and stdev=0
+WARNING: does not remove rows with freq=1 and stdev=0 from the table with the common positions!
+
+
+split.genes <- function(table) {
+        #make an index with the rows that have double genes
+        index <- grep(",", table$Gene.refGene, fixed = T)
+        #if there are no double genes, then return the table
+        if (length(index) == 0) {
+                #Remove rows with freq=1 and stdev=0
+                meancol <- grep("mean", names(table), fixed = TRUE)
+                stdevcol <- grep("stdev", names(table), fixed = TRUE)
+                if ( 0 %in% table[, stdevcol] &
+                     1 %in% table[, meancol]) {
+                        index3 <- logical(length = nrow(table))
+                        for (i in seq_len(nrow(table))) {
+                                index3[i] <- table[i, meancol] == 1 &&
+                                        table[i, stdevcol] == 0
+                        }
+                        table <- table[!index3,]
+                        table$X <- seq_len(nrow(table))
+                        table
+                }
+                else {table}
+        }
+        #else, build two tables and then combine them
+        else {
+                table2 <- table[-c(index),]
+                table3 <- table[index,]
+                #build a table with twice as many rows to put the double genes
+                double <- table3[rep(seq_len(nrow(table3)), each=2),]
+                double$Gene.refGene <- as.character(double$Gene.refGene)
+                for (i in seq_len(nrow(table3))) {
+                        data.row1 <- i*2 -1
+                        data.row2 <- i*2
+                        gene1 <- strsplit(as.character(table3$Gene.refGene[i]),
+                                          ",", fixed = T)[[1]][1]
+                        gene2 <- strsplit(as.character(table3$Gene.refGene[i]),
+                                          ",", fixed = T)[[1]][2]
+                        
+                        double[data.row1,"Gene.refGene"] <- gene1
+                        double[data.row2,"Gene.refGene"] <- gene2
+                }
+                #combine the two tables
+                final <- rbind(table2,double)
+                
+                #remove rows with the value NONE
+                index2 <- grep("NONE", final$Gene.refGene, fixed = T)
+                if (length(index2) == 0) {
+                        final$X <- seq_len(nrow(final))
+                }
+                else {
+                final <- final[-c(index2),]
+                final$X <- seq_len(nrow(final))
+                }
+                #Remove rows with freq=1 and stdev=0
+                meancol <- grep("mean", names(final), fixed = TRUE)
+                stdevcol <- grep("stdev", names(final), fixed = TRUE)
+                if ( 0 %in% final[, stdevcol] &
+                     1 %in% final[, meancol]) {
+                        index3 <- logical(length = nrow(final))
+                        for (i in seq_len(nrow(final))) {
+                                index3[i] <- final[i, meancol] == 1 &&
+                                                final[i, stdevcol] == 0
+                        }
+                        final <- final[!index3,]
+                        final$X <- seq_len(nrow(final))
+                        final
+                }
+                else {final}
+        }
+}
+
+
+Do the splitting, remove NONE genes and rows with mean=1 and stdev=0:
+
+
+adar.group1.AD.unique <- split.genes(adar.group1.AD.unique)
+adar.group1.normal.AD.common <- split.genes( adar.group1.normal.AD.common)
+adar.group1.normal.unique <- split.genes( adar.group1.normal.unique)
+adar.group2.AD.unique <- split.genes( adar.group2.AD.unique)
+adar.group2.normal.AD.common <- split.genes( adar.group2.normal.AD.common)
+adar.group2.normal.unique <- split.genes( adar.group2.normal.unique)
+apobec.group1.AD.unique <- split.genes( apobec.group1.AD.unique)
+apobec.group1.normal.AD.common <- split.genes( apobec.group1.normal.AD.common)
+apobec.group1.normal.unique <- split.genes( apobec.group1.normal.unique)
+apobec.group2.AD.unique <- split.genes( apobec.group2.AD.unique)
+apobec.group2.normal.AD.common <- split.genes( apobec.group2.normal.AD.common)
+apobec.group2.normal.unique <- split.genes( apobec.group2.normal.unique)
+
+
+Build a dataframe with all the positions:
+
+
+For group 1:
+
+
+build.df.group1 <- function(normal.unique, AD.unique, common) {
+        #Keep only the necessary columns from the tables
+        #This is the only change between the 2 functions!
+        normal.names <- names(common)[12:15]
+        AD.names <- names(common)[18:22]
+        #Build table1 from normal.unique
+        table1 <- as.data.frame(matrix(nrow = nrow(normal.unique)))
+        
+        table1[,1] <- normal.unique$Chr
+        table1[,2] <- normal.unique$Position
+        table1[,3] <- normal.unique$Gene.refGene
+        table1[,4] <- paste(normal.unique$Gene.refGene, normal.unique$Chr,
+                             normal.unique$Position, sep="|")
+        names(table1)[1:4] <- c("Chr", "Position", "Gene", "Gene|Chr|Pos")
+        
+        table1[,normal.names] <- normal.unique[,normal.names]
+        table1[,AD.names] <- NA
+        
+        #Build table2 from AD.unique
+        table2 <- as.data.frame(matrix(nrow = nrow(AD.unique)))
+        
+        table2[,1] <- AD.unique$Chr
+        table2[,2] <- AD.unique$Position
+        table2[,3] <- AD.unique$Gene.refGene
+        table2[,4] <- paste(AD.unique$Gene.refGene, AD.unique$Chr,
+                            AD.unique$Position, sep="|")
+        names(table2)[1:4] <- c("Chr", "Position", "Gene", "Gene|Chr|Pos")
+        
+        table2[,normal.names] <- NA
+        table2[,AD.names] <- AD.unique[,AD.names]
+        
+        #Build table3 from common
+        table3 <- as.data.frame(matrix(nrow = nrow(common)))
+        
+        table3[,1] <- common$Chr
+        table3[,2] <- common$Position
+        table3[,3] <- common$Gene.refGene
+        table3[,4] <- paste(common$Gene.refGene, common$Chr,
+                            common$Position, sep="|")
+        names(table3)[1:4] <- c("Chr", "Position", "Gene", "Gene|Chr|Pos")
+        
+        table3[,normal.names] <- common[,normal.names]
+        table3[,AD.names] <- common[,AD.names]
+        
+        #Build the final table
+        table.fin <- rbind(table1, table2, table3)
+        
+        #Print it!
+        table.fin
+}
+
+
+For group 2:
+
+
+build.df.group2 <- function(normal.unique, AD.unique, common) {
+        #Keep only the necessary columns from the tables
+        #This is the only change between the 2 functions!
+        normal.names <- names(common)[12:14]
+        AD.names <- names(common)[17:19]
+        #Build table1 from normal.unique
+        table1 <- as.data.frame(matrix(nrow = nrow(normal.unique)))
+        
+        table1[,1] <- normal.unique$Chr
+        table1[,2] <- normal.unique$Position
+        table1[,3] <- normal.unique$Gene.refGene
+        table1[,4] <- paste(normal.unique$Gene.refGene, normal.unique$Chr,
+                            normal.unique$Position, sep="|")
+        names(table1)[1:4] <- c("Chr", "Position", "Gene", "Gene|Chr|Pos")
+        
+        table1[,normal.names] <- normal.unique[,normal.names]
+        table1[,AD.names] <- NA
+        
+        #Build table2 from AD.unique
+        table2 <- as.data.frame(matrix(nrow = nrow(AD.unique)))
+        
+        table2[,1] <- AD.unique$Chr
+        table2[,2] <- AD.unique$Position
+        table2[,3] <- AD.unique$Gene.refGene
+        table2[,4] <- paste(AD.unique$Gene.refGene, AD.unique$Chr,
+                            AD.unique$Position, sep="|")
+        names(table2)[1:4] <- c("Chr", "Position", "Gene", "Gene|Chr|Pos")
+        
+        table2[,normal.names] <- NA
+        table2[,AD.names] <- AD.unique[,AD.names]
+        
+        #Build table3 from common
+        table3 <- as.data.frame(matrix(nrow = nrow(common)))
+        
+        table3[,1] <- common$Chr
+        table3[,2] <- common$Position
+        table3[,3] <- common$Gene.refGene
+        table3[,4] <- paste(common$Gene.refGene, common$Chr,
+                            common$Position, sep="|")
+        names(table3)[1:4] <- c("Chr", "Position", "Gene", "Gene|Chr|Pos")
+        
+        table3[,normal.names] <- common[,normal.names]
+        table3[,AD.names] <- common[,AD.names]
+        
+        #Build the final table
+        table.fin <- rbind(table1, table2, table3)
+        
+        #Print it!
+        table.fin
+}
+
+
+Use the functions build.df to get the dataframes with all the positions:
+
+
+adar.group1.positions.df <- build.df.group1(adar.group1.normal.unique,
+                                            adar.group1.AD.unique,
+                                            adar.group1.normal.AD.common)
+
+
+adar.group2.positions.df <- build.df.group2(adar.group2.normal.unique,
+                                            adar.group2.AD.unique,
+                                            adar.group2.normal.AD.common)
+
+
+apobec.group1.positions.df <- build.df.group1(apobec.group1.normal.unique,
+                                              apobec.group1.AD.unique,
+                                              apobec.group1.normal.AD.common)
+
+
+apobec.group2.positions.df <- build.df.group2(apobec.group2.normal.unique,
+                                              apobec.group2.AD.unique,
+                                              apobec.group2.normal.AD.common)
+
+
+
+
+Function to join the two groups:
+NOTE: Only works for this dataset!
+
+
+join.groups <- function(positions.df1, positions.df2) {
+        #make an index with the positions that are commmon
+        unique2 <- logical()
+        for (i in seq_len(nrow(positions.df2))) {
+                unique2[i] <- positions.df2[i,"Gene|Chr|Pos"] %in% positions.df1$`Gene|Chr|Pos`
+        }
+        #Add all the positions from df1
+        table <- positions.df1
+        ###Add the unique positions from df2
+        
+        #Add new rows
+        new.rows <- nrow(table) + seq_len(sum(!unique2))
+        table$Chr <- as.character(table$Chr)
+        table$Gene <- as.character(table$Gene)
+        positions.df2$Chr <- as.character(positions.df2$Chr)
+        positions.df2$Gene <- as.character(positions.df2$Gene)
+        
+        table[new.rows,1:4] <- positions.df2[!unique2,1:4]
+        #Add new columns
+        df2.names <- names(positions.df2)[5:10]
+        
+        table[,df2.names] <- NA
+        table[new.rows,df2.names] <- positions.df2[!unique2,df2.names]
+        
+        ##Add the common positions
+        row.com <- grep("TRUE", unique2)
+        for (i in row.com) {
+                table[which(table$`Gene|Chr|Pos` == positions.df2$`Gene|Chr|Pos`[i]), df2.names] <-
+                        positions.df2[i, df2.names]
+        }
+        
+        #Print the table
+        table
+}
+
+
+Join the two groups:
+
+
+adar.positions.df <- join.groups(adar.group1.positions.df, adar.group2.positions.df)
+apobec.positions.df <- join.groups(apobec.group1.positions.df, apobec.group2.positions.df)
+
+
+Load the lists with the RNA editing positions(generated previously):
+satoh.adar <- dget("satoh.adar")
+satoh.apobec <- dget("satoh.apobec")
+
+
+Fill the NAs of the previous table using the outtable.sig that REDItools exports. If the position is not found in the table it is marked as an NA value (Not Available).
+the positions.df is the dataframe from the previous function and the list is the list generated by lapplying read xlsx on the rna-editing files. (The list has already been generated)
+the zeros variable is whether you want to fill the missing positions with zeros or not. It should be set to FALSE.
+If zeros = FALSE then the missing positions will be filled with NAs.
+fill.nas <- function(positions.df, list, zeros = TRUE) {
+        #get the names of the columns with the samples
+        samples <- names(list)
+        #get the columns of the data.frame with the same names
+        cols <- numeric()
+        for (i in samples) {
+                cols[i] <- grep(i, names(positions.df))
+        }
+        ##Loop through the columns
+        for (j in cols){
+                table <- subset(list, names(list) == names(cols))
+                table <- table[[1]]
+                ##Loop through the rows
+                for (i in seq_len(nrow(positions.df))){
+                        if (is.na(positions.df[i,j]) == FALSE) {next}
+                        if (is.na(positions.df[i,j]) == TRUE) {
+                                if (positions.df[i,"Position"] %in% table[,"Start"]) {
+                                        positions.df[i,j] <- table[which(table[,"Start"] == positions.df[i,"Position"]),
+                                                                   "Variant_allele_frequency"]
+                                }
+                                else {
+                                        if (zeros == TRUE){positions.df[i,j] <- 0}
+                                        else if (zeros == FALSE){positions.df[i,j] <- NA}
+                                        }
+                                }
+                }
+        }
+        #Print the output
+        row.names(positions.df) <- NULL
+        positions.df
+}
+
+
+Use the function to fill the missing positions from the previous tables and fill the positions that cannot be found with NAs:
+
+
+adar.positions.df.nas <- fill.nas(adar.positions.df, satoh.adar, zeros = FALSE)
+apobec.positions.df.nas <- fill.nas(apobec.positions.df, satoh.apobec, zeros = FALSE)
+
+
+Load the normalized counts from the gene expression analysis
+counts <- read.table("C:/R_wd/satoh_diff_exp/norm.counts")
+
+
+
+
+Function to add columns with the expression data according to the gene symbol.
+the table is the one generated previously and the counts is a dataframe with the counts and a column with the gene symbol. It was generated from DESeq2.
+columns is a integer vector containing the columns of the counts that will be added in the table.
+
+
+add.gene.counts <- function(table, counts, columns){
+        library("AnnotationDbi")  #Base package
+        library("org.Hs.eg.db")  #Human
+        #get the names of the columns
+        cols <- names(counts)[columns]
+        
+        #Loop through the columns
+        for (i in seq_along(cols)){
+                newcol <- paste0("expr.", cols[i])
+                table[, newcol] <- NA
+        
+                #Loop through the rows
+                for (j in seq_len(nrow(table))){
+                        #convert the Gene symbol to ENSEMBL ID
+                        ens <- mapIds(org.Hs.eg.db,
+                                      keys=table[j,"Gene"],
+                                      column="ENSEMBL",
+                                      keytype="SYMBOL",
+                                      multiVals="first")
+                        
+                        if (ens %in% row.names(counts)){
+                                table[j, newcol] <- counts[which(row.names(counts) == ens), cols[i]]
+                        }
+                        else{
+                                table[j, newcol] <- NA
+                        }
+                }
+        }
+        #Remove the rows that do not have expression data
+        table.no.na <- table[which(!is.na(table[,length(table)])),]
+        row.names(table.no.na) <- NULL
+        #Print a warning message with the lost rows
+        lost.rows <- nrow(table) - nrow(table.no.na)
+        print(paste0(lost.rows, " rows were discarded because no gene expression data was found"))
+        #Print the resulting table
+        table.no.na
+}
+
+
+Use the function:
+
+
+adar.counts.df.nas <- add.gene.counts(adar.positions.df.nas, counts, 1:15)
+(49 rows were discarded because the gene symbols could not be found in the expression data)
+
+
+apobec.counts.df.nas <- add.gene.counts(apobec.positions.df.nas, counts, 1:15)
+(4 rows were discarded because the gene symbols could not be found in the expression data)
+
+
+Function to do the correlation.
+The table is the table generated by the previous function and contains the RNA editing frequency and the expression data. col.names is a character vector with the names of the columns of the samples.
+
+
+correlate <- function(table, col.names){
+        
+        #get the columns with the RNA-editing frequency and expression data
+        editing <- numeric()
+        expression <- numeric()
+        for (i in seq_along(col.names)){
+                editing[i] <- grep(paste0("freq.*", col.names[i]), names(table))
+                expression[i] <- grep(paste0("expr.*", col.names[i]), names(table))
+        }
+        #Make a table to put the correlation data
+        corr <- as.data.frame(matrix(nrow = nrow(table)))
+        
+        corr[,1] <- table$Chr
+        names(corr)[1] <- "Chr"
+        corr$Position <- table$Position
+        corr$Gene <- table$Gene
+        corr$`Gene|Chr|Pos` <- table$`Gene|Chr|Pos`
+        corr$Corr <- NA
+        corr$`p-value` <- NA
+        
+        #Make a temporary data frame to make the correlation
+        tmp <- as.data.frame(matrix(nrow = length(editing), ncol = 2))
+        for (i in seq_len(nrow(table))){
+                #Rebuild the table for every row and take the correlation value
+                for (j in seq_along(editing)) {
+                        tmp[j, 1] <- table[i, editing[j]]
+                        tmp[j, 2] <- table[i, expression[j]]
+                }
+                #Calculate the correlation
+                value <- cor(tmp$V1, tmp$V2, use = "na.or.complete")
+                pvalue <- cor.test(tmp$V1, tmp$V2, use = "na.or.complete")[3]
+                
+                #Add the value to the corr table
+                corr[i, "Corr"] <- value
+                corr[i, "p-value"] <- pvalue
+        }
+        #Print the corr table and exit
+        corr
+}
+
+
+Use the function to get the correlation table:
+
+
+col.names <- names(counts)[1:15]
+corr.adar.nas <- correlate(adar.counts.df.nas, col.names)
+corr.apobec.nas <- correlate(apobec.counts.df.nas, col.names)
+
+
+Order the correlation table by ascending p-value and descending correlation coefficient:
+
+
+corr.adar.nas <- corr.adar.nas[order(corr.adar.nas$`p-value`, corr.adar.nas$Corr),]
+row.names(corr.adar.nas) <- NULL
+
+
+corr.apobec.nas <- corr.apobec.nas[order(corr.apobec.nas$`p-value`, corr.apobec.nas$Corr),]
+row.names(corr.apobec.nas) <- NULL
+
+
+Add the information Gene.refGene and Func.refGene and the ENSEMBL IDs:
+
+
+add.info <- function(table, list) {
+        library("AnnotationDbi")  #Base package
+        library("org.Hs.eg.db")  #Human
+        
+        info <- do.call(rbind, list)
+        #Add Gene.refGene and Func.refGene
+        for (i in seq_len(nrow(table))) {
+                tmp1 <- info[which(info[,"Start"] == table[i,"Position"]), "Gene.refGene"]
+                tmp2 <- info[which(info[,"Start"] == table[i,"Position"]), "Func.refGene"]
+                table[i, "Gene.refGene"] <- tmp1[1]
+                table[i, "Func.refGene"] <- tmp2[1]
+        }
+        #Add ENSEMBL and Entrenz IDs
+        table$ENSEMBL <- mapIds(org.Hs.eg.db,
+                                keys=table$Gene,
+                                column="ENSEMBL",
+                                keytype="SYMBOL",
+                                multiVals="first")
+        table
+}
+
+
+Use the function:
+
+
+corr.adar.nas <- add.info(corr.adar.nas, satoh.adar)
+corr.apobec.nas <- add.info(corr.apobec.nas, satoh.apobec)
+
+
+Export the tables to xlsx using the xlsx library.
+
+
+Pathway analysis.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+
+
+
+
+
+
+
+
