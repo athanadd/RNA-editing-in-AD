@@ -16,6 +16,8 @@ The workflow can be separated in 6 sections:
 5. Differential RNA Editing
 6. Pathway Analysis and Annotation of KEGG pathways
 
+The first two steps are carried out by Bash scripts, while the others are executed entirely in R.
+
 ## Quality Control
 
 ## Alignment and Variants Calling
