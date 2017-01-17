@@ -10,7 +10,7 @@ apobec.normal <- read.table("input_files/APOBEC.normal", header = T)
 #threshold is the minimum frequency to keep
 #freq.col is the column containing the frequencies
 #rm.col is a numerical vector containing the columns to remove
-filter.frequency <- function(table, min.freq = 0.00, max.freq = 0.9, freq.col = 16, rm.col = c(1,13)){
+filter.frequency <- function(table, min.freq = 0.01, max.freq = 0.9, freq.col = 16, rm.col = c(1,13)){
         table <- table[which(table[,freq.col] >= min.freq),]
         table <- table[which(table[,freq.col] <= max.freq),]
         table <- table[,-rm.col]
