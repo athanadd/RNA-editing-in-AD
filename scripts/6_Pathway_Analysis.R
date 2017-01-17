@@ -29,37 +29,39 @@ unique.apobec.normal.UTR3 <- unique.apobec.normal.UTR3[c(1:11,14,12,13)]
 common.adar.UTR3 <- common.adar.UTR3[,-13]
 common.apobec.UTR3 <- common.apobec.UTR3[,-13]
 #Add a new column for the enzyme
-unique.adar.ad.UTR3$enzyme <- "adar"
-unique.apobec.ad.UTR3$enzyme <- "apobec"
-unique.adar.normal.UTR3$enzyme <- "adar"
-unique.apobec.normal.UTR3$enzyme <- "apobec"
-common.adar.UTR3$enzyme <- "adar"
-common.apobec.UTR3$enzyme <- "apobec"
-#Add a new column in the tables that will have a value of:
-#0 for the commons table
-#-1 for the AD table
-#1 for the Normal table
-unique.adar.ad.UTR3$colcode <- -1
-unique.apobec.ad.UTR3$colcode <- -1
-unique.adar.normal.UTR3$colcode <- 1
-unique.apobec.normal.UTR3$colcode <- 1
-common.adar.UTR3$colcode <- 0
-common.apobec.UTR3$colcode <- 0
+unique.adar.ad.group2.UTR3$enzyme <- "adar"
+unique.apobec.ad.group2.UTR3$enzyme <- "apobec"
+unique.adar.normal.group2.UTR3$enzyme <- "adar"
+unique.apobec.normal.group2.UTR3$enzyme <- "apobec"
+common.adar.group2.UTR3$enzyme <- "adar"
+common.apobec.group2.UTR3$enzyme <- "apobec"
 #Bind the table
-all <- rbind(common.apobec.UTR3, common.adar.UTR3,
-             unique.apobec.normal.UTR3, unique.adar.normal.UTR3,
-             unique.apobec.ad.UTR3, unique.adar.ad.UTR3)
-all <- all[,-16]
-all$colcode1 <- c(common.apobec.UTR3$colcode, common.adar.UTR3$colcode,
-                  rep(NA, times = 5113))
-all$colcode2 <- c(rep(NA, times = 853),
-                  unique.apobec.normal.UTR3$colcode, unique.adar.normal.UTR3$colcode,
-                  rep(NA, times = 3438))
-all$colcode3 <- c(rep(NA, times = 2528),unique.apobec.ad.UTR3$colcode, unique.adar.ad.UTR3$colcode)
-     
+all <- rbind(common.apobec.group2.UTR3, common.adar.group2.UTR3,
+             unique.apobec.normal.group2.UTR3, unique.adar.normal.group2.UTR3,
+             unique.apobec.ad.group2.UTR3, unique.adar.ad.group2.UTR3)
+#Add a new column in the tables for ad, one for common and another
+#for normal that will have a value of:
+#0 for the commons
+#-1 for the AD
+#1 for the Normal
+t.common <- nrow(all) - nrow(rbind(unique.apobec.normal.group2.UTR3, unique.adar.normal.group2.UTR3,
+                                   unique.apobec.ad.group2.UTR3, unique.adar.ad.group2.UTR3))
+
+t.normal <- nrow(all) - t.common - nrow(rbind(unique.apobec.ad.group2.UTR3, unique.adar.ad.group2.UTR3))
+
+t.ad <- nrow(all) - t.common - t.normal
+#commons
+all$colcode1 <- c(rep(0, times= t.common), rep(NA, times=t.normal), rep(NA, times = t.ad))
+#unique.normal
+all$colcode2 <- c(rep(NA, times= t.common), rep(1, times=t.normal), rep(NA, times = t.ad))
+#unique.ad
+all$colcode3 <- c(rep(NA, times= t.common), rep(NA, times=t.normal), rep(-1, times = t.ad))
+
+
+#prepare the matrix to be used by pathview
 names.all <- as.character(all$Gene.refGene)
 mat.all <- as.matrix(all[,c(16,17,18)])
-row.names(mat.all) <- names.all     
+row.names(mat.all) <- names.all  
 
 ################Visualization
 
